@@ -4017,6 +4017,25 @@ pub async fn proxy<D: IoDeviceTrait>(
     let passthrough = !cfg.mitm || cfg.runtime_mitm_failed;
     let hex_requested = cfg.hexdump_level;
 
+    if passthrough {
+        if cfg.runtime_mitm_failed {
+            warn!(
+                "{} 🔄 running in <yellow>passthrough</> mode: MITM was disabled for the rest of this boot after an earlier SSL/certificate error",
+                get_name(proxy_type)
+            );
+        } else {
+            info!(
+                "{} 🔄 running in <b>passthrough</> mode (MITM disabled in config)",
+                get_name(proxy_type)
+            );
+        }
+    } else {
+        info!(
+            "{} 🔐 running in <b><blue>MITM</> mode",
+            get_name(proxy_type)
+        );
+    }
+
     // in full_frames/passthrough mode we only directly pass packets from one endpoint to the other
     if passthrough {
         loop {
@@ -4051,6 +4070,11 @@ pub async fn proxy<D: IoDeviceTrait>(
     let (mut ssl_conn, mut mem_buf) = match crate::ssl_rustls::ssl_builder(proxy_type, KEYS_PATH) {
         Ok(s) => s,
         Err(e) => {
+            error!(
+                "{} 🔴 SSL/certificate problem ({}), falling back to <yellow>passthrough</> (MITM off) for the rest of this boot",
+                get_name(proxy_type),
+                e
+            );
             config.write().await.runtime_mitm_failed = true;
             return Err(e);
         }
@@ -4106,6 +4130,11 @@ pub async fn proxy<D: IoDeviceTrait>(
             pkt.ssl_decapsulate_write(&mut mem_buf).await?;
             match ssl_conn.process(&mut mem_buf) {
                 Err(e) => {
+                    error!(
+                        "{} 🔴 SSL/certificate problem during handshake ({}), falling back to <yellow>passthrough</> (MITM off) for the rest of this boot",
+                        get_name(proxy_type),
+                        e
+                    );
                     config.write().await.runtime_mitm_failed = true;
                     return Err(Box::new(e));
                 }
@@ -4193,6 +4222,11 @@ pub async fn proxy<D: IoDeviceTrait>(
         loop {
             match ssl_conn.process(&mut mem_buf) {
                 Err(e) => {
+                    error!(
+                        "{} 🔴 SSL/certificate problem during handshake ({}), falling back to <yellow>passthrough</> (MITM off) for the rest of this boot",
+                        get_name(proxy_type),
+                        e
+                    );
                     config.write().await.runtime_mitm_failed = true;
                     return Err(Box::new(e));
                 }
