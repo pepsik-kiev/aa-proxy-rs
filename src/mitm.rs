@@ -2918,6 +2918,21 @@ pub async fn pkt_modify_hook(
                 Ok(msg) => msg,
             };
 
+            // Strip the BluetoothService payload (not the whole service entry) so
+            // Android does not lock the AA session into Car-Kit/HFP-only audio
+            // routing. Combined with bt_a2dp_sink_registration in bluetooth.rs,
+            // this leaves the vehicle's own Bluetooth media audio untouched.
+            // See GH issue #126.
+            if cfg.bt_a2dp_sink_enabled {
+                for service in msg.services.iter_mut() {
+                    service.bluetooth_service = protobuf::MessageField::none();
+                }
+                info!(
+                    "{} bt_a2dp_sink_enabled: stripped BluetoothService from SDR",
+                    get_name(proxy_type)
+                );
+            }
+
             // Keep a semantic channel map for pkt_debug filters. This is updated
             // again after SDR rewriting/injected services below.
             update_debug_channel_kinds(ctx, &msg);

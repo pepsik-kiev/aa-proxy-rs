@@ -569,6 +569,14 @@ pub struct AppConfig {
     /// service when bt_real_hu_passthrough_enabled is active.
     #[serde(alias = "real_hu_bluetooth_passthrough_address")]
     pub bt_real_hu_passthrough_address: String,
+    /// Register a dummy A2DP Sink SDP profile on the local Bluetooth adapter and
+    /// strip the BluetoothService entry from the SDR sent to the phone/head unit.
+    /// This keeps Android Auto from locking the session into Car-Kit/HFP-only
+    /// audio routing, so the vehicle's own Bluetooth media audio stays untouched
+    /// while AA voice/media still routes through the proxy. See GH issue #126.
+    /// No actual audio is streamed through this profile; it only satisfies the
+    /// phone's A2DP capability check.
+    pub bt_a2dp_sink_enabled: bool,
     pub remove_wifi: bool,
     pub inject_display_types: InjectDisplayTypes,
     pub inject_add_input_sources: bool,
@@ -968,6 +976,7 @@ impl Default for AppConfig {
             remove_bluetooth: false,
             bt_real_hu_passthrough_enabled: false,
             bt_real_hu_passthrough_address: String::new(),
+            bt_a2dp_sink_enabled: false,
             remove_wifi: false,
             inject_display_types: InjectDisplayTypes::default(),
             inject_add_input_sources: false,
@@ -1315,6 +1324,7 @@ impl AppConfig {
         doc["remove_bluetooth"] = value(self.remove_bluetooth);
         doc["bt_real_hu_passthrough_enabled"] = value(self.bt_real_hu_passthrough_enabled);
         doc["bt_real_hu_passthrough_address"] = value(self.bt_real_hu_passthrough_address.clone());
+        doc["bt_a2dp_sink_enabled"] = value(self.bt_a2dp_sink_enabled);
         doc["remove_wifi"] = value(self.remove_wifi);
         doc["inject_display_types"] = value(self.inject_display_types.to_string());
         doc["inject_add_input_sources"] = value(self.inject_add_input_sources);

@@ -763,6 +763,10 @@ async fn tokio_main(
         }
     }
 
+    if cfg.bt_a2dp_sink_enabled && !web_only {
+        bluetooth::spawn_a2dp_sink_registration(cfg.dongle_mode);
+    }
+
     if let Some(ref bindaddr) = cfg.webserver {
         // preparing AppState and starting webserver
         let app = web::app(state.clone().into());

@@ -478,6 +478,11 @@
               "requires": "bt_real_hu_passthrough_enabled",
               "advanced": true
             },
+            "bt_a2dp_sink_enabled": {
+              "typ": "boolean",
+              "description": "Register a dummy A2DP Sink SDP profile on the local Bluetooth adapter and strip the BluetoothService entry from the `service discovery response`. Keeps Android Auto from locking the session into Car-Kit/HFP-only audio routing, so the vehicle's own Bluetooth media audio stays untouched. No audio is actually streamed through this profile. Default: false.",
+              "advanced": true
+            },
             "remove_wifi": {
               "typ": "boolean",
               "description": "Remove the Wi-Fi service from the `service discovery response`. May help on head units with integrated wireless Android Auto."

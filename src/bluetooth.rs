@@ -388,6 +388,7 @@ const HSP_AG_UUID: Uuid = Uuid::from_u128(0x0000111200001000800000805f9b34fb);
 // SDP record to connect to aa-proxy-rs as the projected head unit.
 const SDP_OBEX_OBJECT_PUSH_UUID: Uuid = Uuid::from_u128(0x0000110500001000800000805f9b34fb);
 const SDP_AUDIO_SOURCE_UUID: Uuid = Uuid::from_u128(0x0000110a00001000800000805f9b34fb);
+const SDP_AUDIO_SINK_UUID: Uuid = Uuid::from_u128(0x0000110b00001000800000805f9b34fb);
 const SDP_AVRCP_TARGET_UUID: Uuid = Uuid::from_u128(0x0000110c00001000800000805f9b34fb);
 const SDP_AVRCP_REMOTE_UUID: Uuid = Uuid::from_u128(0x0000110e00001000800000805f9b34fb);
 const SDP_AVRCP_CONTROLLER_UUID: Uuid = Uuid::from_u128(0x0000110f00001000800000805f9b34fb);
@@ -4899,6 +4900,78 @@ async fn log_hu_device_snapshot(adapter: &Adapter, hu_addr: Address, context: &s
             NAME, context, hu_addr, e
         ),
     }
+}
+
+/// Register a dummy A2DP Sink SDP profile on the local Bluetooth adapter via
+/// BlueZ's `ProfileManager1`. No AVDTP/media transport is implemented here;
+/// this only advertises the Audio Sink service class so a paired phone sees
+/// A2DP as available. Combined with stripping BluetoothService from the SDR
+/// (see `pkt_modify_hook` in mitm.rs), this keeps Android Auto from locking
+/// the session into Car-Kit/HFP-only audio routing, leaving the vehicle's own
+/// Bluetooth media audio session untouched. See GH issue #126 ("Expose A2DP
+/// on the proxy").
+///
+/// The SDP-only, sink-role registration used here is not exposed by bluer's
+/// typed `rfcomm::Profile` API (that `role` option is RFCOMM client/server,
+/// not audio sink/source), so this talks to org.bluez directly via zbus.
+async fn register_a2dp_sink_profile() -> Result<()> {
+    use std::collections::HashMap;
+    use zbus::zvariant::{ObjectPath, Value};
+
+    let connection = zbus::connection::Builder::system()?.build().await?;
+
+    let mut options: HashMap<&str, Value> = HashMap::new();
+    options.insert("Name", Value::from("A2DP Audio Sink"));
+    options.insert("Role", Value::from("sink"));
+    options.insert("RequireAuthentication", Value::from(false));
+    options.insert("RequireAuthorization", Value::from(false));
+    options.insert("AutoConnect", Value::from(true));
+
+    let profile_path = ObjectPath::try_from("/org/bluez/aa_proxy_rs/a2dp_sink")?;
+
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.bluez",
+        "/org/bluez",
+        "org.bluez.ProfileManager1",
+    )
+    .await?;
+
+    proxy
+        .call::<_, _, ()>(
+            "RegisterProfile",
+            &(profile_path, SDP_AUDIO_SINK_UUID.to_string(), options),
+        )
+        .await?;
+
+    info!(
+        "{} 🔊 A2DP Sink SDP profile registered (bt_a2dp_sink_enabled)",
+        NAME
+    );
+
+    // Keep the D-Bus connection alive for the life of the process so BlueZ
+    // retains the SDP record; there is no per-session teardown for this option.
+    std::future::pending::<()>().await;
+    Ok(())
+}
+
+/// Spawn the A2DP Sink SDP profile registration task in the background.
+/// Intended to be called once at startup when `bt_a2dp_sink_enabled` is set.
+/// No-op in dongle mode, where this adapter-level BlueZ registration doesn't apply.
+pub fn spawn_a2dp_sink_registration(dongle_mode: bool) {
+    if dongle_mode {
+        warn!("{} 🔊 bt_a2dp_sink_enabled ignored in dongle_mode", NAME);
+        return;
+    }
+
+    tokio::spawn(async {
+        if let Err(e) = register_a2dp_sink_profile().await {
+            warn!(
+                "{} 🔊 A2DP Sink SDP profile registration failed: {}",
+                NAME, e
+            );
+        }
+    });
 }
 
 impl Bluetooth {
