@@ -19,6 +19,7 @@ wasm-scripting = ["wasmtime", "wasmtime/component-model", "wasmtime-wasi", "noti
 
 [dependencies]
 dbus = { version = "0.9.7", features = ["vendored"] }
+zbus = { version = "5.18", default-features = false, features = ["tokio"] }
 bluer = { version = "0.17.4", features = ["full"] }
 futures = "0.3.31"
 kobject-uevent = "0.1.1"
