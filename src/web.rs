@@ -121,9 +121,17 @@ pub struct ServerEvent {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientWsMessage {
-    Subscribe { topic: String },
-    Unsubscribe { topic: String },
-    ScriptEvent { topic: String, payload: String },
+    Subscribe {
+        topic: String,
+    },
+    Unsubscribe {
+        topic: String,
+    },
+    #[serde(alias = "script-event")]
+    ScriptEvent {
+        topic: String,
+        payload: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -233,6 +241,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/version", get(version_handler))
         .route("/ws", get(ws_handler))
+        .route("/ws/location", get(ws_location_handler))
         .route("/raw-topic-data", post(raw_topic_data_handler))
         .route("/bt/devices", get(bt_helper::bt_devices_handler))
         .route(
@@ -2291,12 +2300,58 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) ->
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
+/// Dedicated live GPS stream: no subscribe handshake needed, every text frame is one
+/// location JSON object (see `location_to_json` in mitm.rs). Requires `collect_location`.
+async fn ws_location_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    debug!("WS location handler called");
+    ws.on_upgrade(move |socket| handle_location_socket(socket, state))
+}
+
+async fn handle_location_socket(socket: WebSocket, state: Arc<AppState>) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut ws_event_rx = state.ws_event_tx.subscribe();
+
+    loop {
+        tokio::select! {
+            incoming = receiver.next() => {
+                match incoming {
+                    Some(Ok(Message::Ping(payload))) => {
+                        if sender.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    // clients have nothing to tell us on this endpoint
+                    Some(Ok(_)) => {}
+                }
+            }
+
+            event = ws_event_rx.recv() => {
+                match event {
+                    Ok(ev) if ev.topic == "location" => {
+                        if sender.send(Message::Text(ev.payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    // shared bus: some events were skipped, just keep streaming
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
 #[cfg(not(feature = "wasm-scripting"))]
 async fn run_wasm_ws_hooks(
     _topic: String,
     _payload: String,
     _state: Arc<AppState>,
-) -> Result<Option<bool>> {
+) -> Result<Option<String>> {
     Ok(None)
 }
 
@@ -2305,7 +2360,7 @@ async fn run_wasm_ws_hooks(
     topic: String,
     payload: String,
     state: Arc<AppState>,
-) -> Result<Option<bool>> {
+) -> Result<Option<String>> {
     let Some(registry) = state.script_registry.clone() else {
         return Ok(None);
     };
@@ -2323,12 +2378,7 @@ async fn run_wasm_ws_hooks(
         {
             Ok((result_payload, _effects)) => {
                 if !result_payload.is_empty() {
-                    let _ = state.ws_event_tx.send(ServerEvent {
-                        topic: topic.clone(),
-                        payload: result_payload,
-                    });
-
-                    return Ok(Some(true));
+                    return Ok(Some(result_payload));
                 }
             }
             Err(err) => {
@@ -2340,7 +2390,7 @@ async fn run_wasm_ws_hooks(
         }
     }
 
-    Ok(Some(false))
+    Ok(None)
 }
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
@@ -2364,6 +2414,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     loop {
         tokio::select! {
             incoming = receiver.next() => {
+                // some clients (e.g. curl) send their messages as binary frames:
+                // handle valid UTF-8 ones like text, ignore the rest
+                let incoming = match incoming {
+                    Some(Ok(Message::Binary(bin))) => match String::from_utf8(bin) {
+                        Ok(text) => Some(Ok(Message::Text(text))),
+                        Err(_) => continue,
+                    },
+                    other => other,
+                };
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         info!("[ws] incoming ws message {}", &text);
@@ -2384,10 +2443,17 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             }
                             Ok(ClientWsMessage::ScriptEvent { topic, payload }) => {
                                 match run_wasm_ws_hooks(topic.clone(), payload.clone(), state.clone()).await {
-                                    Ok(Some(true)) => {
-                                        // wasm handled it and already emitted replacement event
+                                    Ok(Some(response_payload)) => {
+                                        // wasm handled it: answer directly to the requesting client
+                                        let msg = ServerWsMessage::Event {
+                                            topic,
+                                            payload: response_payload,
+                                        };
+                                        if sender.send(Message::Text(serde_json::to_string(&msg).unwrap())).await.is_err() {
+                                            break;
+                                        }
                                     }
-                                    Ok(Some(false)) | Ok(None) => {
+                                    Ok(None) => {
                                         // wasm did not handle it, forward original event
                                         let _ = state.ws_event_tx.send(ServerEvent {
                                             topic,
@@ -2414,7 +2480,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             }
                         }
                     }
-                    Some(Ok(Message::Binary(_))) => {}
+                    Some(Ok(Message::Binary(_))) => {} // already handled above
                     Some(Ok(Message::Ping(payload))) => {
                         if sender.send(Message::Pong(payload)).await.is_err() {
                             break;
@@ -2433,10 +2499,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                         info!("Received event {}, payload {}", &ev.topic, &ev.payload);
                         if subscriptions.contains(&ev.topic) {
                             match run_wasm_ws_hooks(ev.topic.clone(), ev.payload.clone(), state.clone()).await {
-                                Ok(Some(true)) => {
-                                    // wasm handled it and already emitted replacement event
+                                Ok(Some(replacement)) => {
+                                    // wasm handled it: emit the replacement event
+                                    let _ = state.ws_event_tx.send(ServerEvent {
+                                        topic: ev.topic,
+                                        payload: replacement,
+                                    });
                                 }
-                                Ok(Some(false)) | Ok(None) => {
+                                Ok(None) => {
                                     // wasm did not handle it, forward original event
                                     let msg = ServerWsMessage::Event {
                                         topic: ev.topic,

@@ -47,6 +47,7 @@ The project initially focused on supporting the Raspberry Pi, but has since grow
   - **BT SCO/eSCO call audio bridge** – routes phone call audio through Android Auto media/microphone channels with echo control and resampling
   - **Vendor Extension Channel (VEC)** – packet-level extension channel integrated with REST, WebSocket, and WASM hooks
   - **Speed & odometry** – speed data collection (`/speed` endpoint), odometer injection (`/odometer`), and tire pressure injection (`/tire-pressure`) via REST API
+  - **Live GPS location** – head unit GPS position streamed over WebSocket (`/ws/location`, config option `collect_location`)
   - **Media button interception** – short press re-injects a clean click; long press triggers a configurable script (`hu_button_handler`)
   - **Packet debug mode** – fine-grained packet inspection with protobuf decoding, filtering, and payload truncation
 - **Wired USB phone mode** – works without the Bluetooth handshake or Wi-Fi pairing
@@ -208,7 +209,7 @@ aa-proxy-rs can draw a small text box with any text you provide directly on the 
 The phone video is decoded, the text is rendered and the stream is re-encoded to H.264 Constrained Baseline, using either a pure-Rust software codec
 (no external programs, system libraries or kernel configuration needed) or hardware acceleration via Linux V4L2 M2M on supported boards (e.g. Raspberry Pi 3/4/Zero 2 W with `bcm2835-codec`; the Raspberry Pi 5 is **not** supported, it has no hardware H.264 encoder).
 
-![](images/overlay.png)
+<img src="images/overlay1.png" width="33%"> <img src="images/overlay2.png" width="33%"> <img src="images/overlay3.png" width="33%">
 
 **It is disabled by default** and does not touch the video path unless you enable it in `config.toml` (it requires `mitm = true`):
 ```toml
@@ -303,6 +304,21 @@ Single quotes avoid escaping inside the JSON string:
 ```json
 {"text_scale": 24, "text": "<b>RPM:</b> <font color='#00ff00'>2450</font><br><i>Coolant:</i> <font color='#ff3300'>92&deg;C</font>"}
 ```
+
+## Live GPS location (WebSocket)
+In MITM mode the head unit sends its GPS position to the phone in the Android Auto sensor channel. With `collect_location = true` aa-proxy-rs
+captures it from the stream (the real values, before any `video_in_motion` spoofing) and pushes it live to WebSocket clients.
+The head unit has to expose a location sensor, otherwise there is nothing to publish.
+
+Connect to `ws://<aa-proxy-ip>/ws/location` - no subscribe message is needed, every text frame is one JSON sample (usually about 1 per second):
+```json
+{"lat": 52.2297, "lon": 21.0122, "accuracy_m": 5.0, "altitude_m": 110.5, "speed_mps": 13.9, "bearing_deg": 270.0, "ts_ms": 1761200000000}
+```
+`accuracy_m`, `altitude_m`, `speed_mps` and `bearing_deg` are `null` when the head unit does not send them; `ts_ms` is the proxy time (Unix epoch, ms).
+The same samples are also available as the `location` topic on the general `/ws` endpoint (send `{"type":"subscribe","topic":"location"}`),
+and as `{{ws.location.lat}}`-style overlay placeholders.
+
+Quick test: `websocat ws://<aa-proxy-ip>/ws/location`
 
 ## Google Maps EV routing
 Google introduced EV routing features at [CES24](https://blog.google/products/android/android-auto-new-features-ces24/).
